@@ -1,0 +1,48 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "larf"
+version = "0.0.1"
+description = "A study of the impact of simulated user feedback on information retrieval outcomes"
+authors = [
+  { name = "Paul Owoicho" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+dependencies = [
+    "matplotlib ~= 3.10.1",
+    "mkdocs ~= 1.6.1",
+    "numpy ~= 2.2.0",
+    "pandas ~= 2.2.3",
+    "pip ~= 25.0.1",
+    "pytest ~= 8.3.5",
+    "python-dotenv ~= 1.1.0",
+    "ruff ~= 0.11.6",
+    "tqdm ~= 4.67.1",
+    "pyserini ~= 0.44.0",
+    "openai ~= 1.75.0",
+    "retry ~= 0.9.2",
+    "simulator_alignment @ git+https://github.com/paulowoicho/simulator_alignment.git",
+    "ir-measures ~= 0.3.7"
+]
+requires-python = "==3.12.4"
+
+
+[tool.ruff]
+line-length = 99
+src = ["larf"]
+include = ["pyproject.toml", "larf/**/*.py", "tests/**/*.py", "experiments/**/*.py"]
+
+[tool.ruff.lint]
+extend-select = ["I"]  # Add import sorting
+
+[tool.ruff.lint.isort]
+known-first-party = ["larf"]
+force-sort-within-sections = true
+
