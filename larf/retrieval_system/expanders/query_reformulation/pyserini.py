@@ -1,6 +1,6 @@
 from enum import StrEnum, auto
 from logging import getLogger
-from typing import Callable, cast
+from typing import Callable
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -140,14 +140,7 @@ class PyseriniBasedQRExpander(Component):
         self.rerank_budget = rerank_budget
         self.num_threads = num_threads
         self.reformulation_fn = REFORMULATION_METHOD_TO_FN[reformulation_method]
-
-        if not result_parser_fn:
-            logger.warning(
-                "No result parser function provided. Using default parser that may include noisy metadata in parsed results. If you want better control, pass in your own parser."
-            )
-            self._result_parser_fn: Callable[[str], str] = lambda res_txt: res_txt
-        else:
-            self._result_parser_fn = result_parser_fn
+        self._result_parser_fn: Callable[[str], str] = result_parser_fn or (lambda raw: raw)
 
     def run(self, queries: list[Query]) -> list[Query]:
         """Run the query reformulator on the given queries.
@@ -158,7 +151,9 @@ class PyseriniBasedQRExpander(Component):
         Returns:
             list[Query]: The list of reformulated queries.
         """
-        new_queries = {q.id: self._get_new_queries(q) for q in queries}
+        new_queries = {
+            q.id: self.get_new_queries(q, self.top_n, self.reformulation_fn) for q in queries
+        }
         qids, texts = list(new_queries.keys()), list(new_queries.values())
         results = self.search_engine.batch_search(
             queries=texts, qids=qids, k=self.rerank_budget, threads=self.num_threads
@@ -184,20 +179,25 @@ class PyseriniBasedQRExpander(Component):
 
         return queries
 
-    def _get_new_queries(self, query: Query) -> str:
+    @staticmethod
+    def get_new_queries(
+        query: Query, top_n: int, reformulation_fn: Callable[[str, list[str]], str]
+    ) -> str:
         """Reformulate the query based on the passages.
 
         Args:
             query (Query): The query object to reformulate.
+            top_n (int): The number of passages to base new reformulation on.
+            reformulation_fn (Callable[[str, list[str]], str]): Callable to create the new query reformulation.
 
         Returns:
             str: A reformulated query to search with.
         """
         query_text = query.text
-        passages = cast(list[Passage], query.passages)[: self.top_n]
+        passages = query.passages[:top_n]
         rel_passages = [p.text for p in passages]
 
         if not rel_passages:
             return query_text
 
-        return self.reformulation_fn(query_text, rel_passages)
+        return reformulation_fn(query_text, rel_passages)

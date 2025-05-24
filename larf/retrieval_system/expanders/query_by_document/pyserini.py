@@ -87,75 +87,74 @@ class PyseriniBasedQBDExpander(Component):
         self.rerank_budget = rerank_budget
         self.num_threads = num_threads
 
-        if not result_parser_fn:
-            logger.warning(
-                "No result parser function provided. Using default parser that may include noisy metadata in parsed results. If you want better control, pass in your own parser."
-            )
-            self._result_parser_fn: Callable[[str], str] = lambda res_txt: res_txt
-        else:
-            self._result_parser_fn = result_parser_fn
+        self._result_parser_fn: Callable[[str], str] = result_parser_fn or (lambda raw: raw)
         self.expansion_method = expansion_method
 
-        if expansion_method not in EXPANSION_METHOD_TO_FN:
-            raise ValueError(
-                f"Invalid expansion method: {expansion_method}. Supported methods are: {list(EXPANSION_METHOD_TO_FN.keys())}"
-            )
-        self._expansion_fn: Callable[[str, str], str] = EXPANSION_METHOD_TO_FN[expansion_method]
+        self.expansion_fn: Callable[[str, str], str] = EXPANSION_METHOD_TO_FN[expansion_method]
 
-    def run(self, queries: list[Query]) -> list[Query]:
-        if self.expansion_method == ExpansionMethod.RM3 and not self.search_engine.is_using_rm3():
-            logger.info("Setting RM3 for the search engine.")
-            self.search_engine.set_rm3()
-
+    def _get_expansion_inputs(
+        self, queries: list[Query]
+    ) -> dict[tuple[str | int, str | int], str]:
+        expansion_inputs: dict[tuple[str | int, str | int], str] = {}
         for query in queries:
-            self._expand_single(query)
+            if len(query.passages) >= self.rerank_budget:
+                logger.info("Already reached rerank budget for query: %s", query.id)
+                continue
+            for passage in query.passages:
+                key = (query.id, passage.id)
+                expansion_inputs[key] = self.expansion_fn(query.text, passage.text)
 
-        if self.search_engine.is_using_rm3():
-            self.search_engine.unset_rm3()
+        return expansion_inputs
 
-        return queries
+    def _get_new_passages(
+        self, queries: list[Query], neighbours: dict[str, list]
+    ) -> dict[str | int, list[Passage]]:
+        new_passages_map: dict[str | int, list[Passage]] = {q.id: [] for q in queries}
+        seen_map: dict[str | int, set] = {q.id: set(p.id for p in q.passages) for q in queries}
 
-    def _expand_single(self, query: Query) -> None:
-        """Expand the passages for a given query using the Pyserini search engine.
-
-        Args:
-            query (Query): The query object containing the passages to be expanded.
-        """
-
-        if len(query.passages) >= self.rerank_budget:
-            logger.info("Already reached rerank budget for query: %s", query.id)
-            return
-
-        seeds = list(query.passages)
-        expansion_queries = {s.id: self._expansion_fn(query.text, s.text) for s in seeds}
-
-        neighbours = self.search_engine.batch_search(
-            queries=list(expansion_queries.values()),
-            qids=list(expansion_queries.keys()),
-            k=self.num_neighbours,
-            threads=self.num_threads,
-        )
-
-        seen_ids = set(expansion_queries.keys())
-        new_passages: list[Passage] = []
-
-        for hits in neighbours.values():
+        for full_qid, hits in neighbours.items():
+            qid, _ = full_qid.split(":::", 1)
             for hit in hits:
-                if hit.docid in seen_ids:
+                if hit.docid in seen_map[qid]:
                     continue
-                new_passages.append(
+                new_passages_map[qid].append(
                     Passage(
                         id=hit.docid,
                         text=self._result_parser_fn(hit.lucene_document.get("raw") or ""),
                         score=hit.score,
                     )
                 )
-                seen_ids.add(hit.docid)
+                seen_map[qid].add(hit.docid)
+                total = len(seen_map[qid])
+                if total >= self.rerank_budget:
+                    break
 
-                if len(seeds) + len(new_passages) >= self.rerank_budget:
-                    query.set_passages(seeds + new_passages)
-                    return
-        # If we reach here, we have not reached the rerank budget
-        # but we have exhausted the seed set of results to use for expansion.
-        logger.info("Exhausted seed set of results to expand for query: %s", query.id)
-        query.set_passages(seeds + new_passages)
+        return new_passages_map
+
+    def run(self, queries: list[Query]) -> list[Query]:
+        if self.expansion_method == ExpansionMethod.RM3 and not self.search_engine.is_using_rm3():
+            logger.info("Setting RM3 for the search engine.")
+            self.search_engine.set_rm3()
+
+        expansion_inputs = self._get_expansion_inputs(queries)
+
+        qids = [f"{qid}:::{pid}" for (qid, pid) in expansion_inputs.keys()]
+        q_texts = list(expansion_inputs.values())
+        neighbours = self.search_engine.batch_search(
+            queries=q_texts,
+            qids=qids,
+            k=self.num_neighbours,
+            threads=self.num_threads,
+        )
+
+        new_passages_map = self._get_new_passages(queries, neighbours)
+
+        for query in queries:
+            additions = new_passages_map.get(query.id, [])
+            if additions:
+                query.set_passages(query.passages + additions)
+
+        if self.search_engine.is_using_rm3():
+            self.search_engine.unset_rm3()
+
+        return queries

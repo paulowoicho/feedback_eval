@@ -20,7 +20,7 @@ def test_expansion(method, stub_fn, make_query, make_passage, make_hit, make_sea
     seeds = [make_passage("A1", "s1"), make_passage("A2", "s2")]
     q = make_query("QF", passages=seeds.copy())
 
-    hits_map = {"A1": [make_hit("B1", 0.1, "r1")], "A2": [make_hit("B2", 0.2, "r2")]}
+    hits_map = {"QF:::A1": [make_hit("B1", 0.1, "r1")], "QF:::A2": [make_hit("B2", 0.2, "r2")]}
     searcher = make_search_engine(hits_map, using_rm3=True)
     expander = PyseriniBasedQBDExpander(
         search_engine=searcher,
